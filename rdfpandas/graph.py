@@ -201,6 +201,10 @@ def _get_identifier(prefixes: dict, value: object, instance: str = None, datatyp
         rdflib.term.Identifier instance - either URIRef or Literal.
 
     """
+
+    if len(value) == 0:
+        raise EmptyValueError(f"URI or Literal is empty, but not NaN")
+
     if not instance:
         if language:
             return Literal(value, lang = language)
@@ -230,8 +234,6 @@ def _get_identifier(prefixes: dict, value: object, instance: str = None, datatyp
             return URIRef(value)
         elif _is_curie(value):
             return _get_uriref_for_curie(prefixes, value)
-        elif len(value) == 0:
-            raise EmptyValueError(f"URI is empty, but not NaN")
         else:
             raise ValueError(f'Not a valid URI "{value}"')  
     elif instance == BNode.__name__:
