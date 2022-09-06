@@ -4,7 +4,11 @@ import numpy as np
 from rdflib import Graph, Literal, URIRef, BNode
 from rdflib.term import Identifier
 from rdflib.namespace import NamespaceManager
+from rfc3986 import is_valid_uri
 import re
+
+class EmptyValueError(ValueError):
+    pass
 
 def to_graph(df: pd.DataFrame, namespace_manager: NamespaceManager = None) -> Graph:
     """
@@ -38,17 +42,36 @@ def to_graph(df: pd.DataFrame, namespace_manager: NamespaceManager = None) -> Gr
         prefixes[prefix] = namespace
 
     for (index, series) in df.iterrows():
+        # Create an identifier for the index (only need this once per row)
+        s = _get_identifier(prefixes, index)
+        
         for (column, value) in series.iteritems():
+            predicate, resource_type, datatype, language = None, None, None, None
             # Matching unreserved, gen-delims and sub-delims with exception of "(", ")", "@", "[" and "]" from RFC 3986
-            match = re.search('([\w\-._~:/?#!$&\'*+,;=]*)(\{(\w*)\})?(\[(\d*)\])?(\(([\w?:/.]*)\))?(@(\w*))?', column)
+            # match = re.search('([\w\-._~:/?#!$&\'*+,;=]*)(\{(\w*)\})?(\[(\d*)\])?(\(([\w?:/.]*)\))?(@(\w*))?', column)
+            match = re.search("(?P<predicate>[\w\-._~:/?#!$&\'*+,;=]*)(\{(?P<type>\w*)\})?(\[(?P<nth>\d*)\])?(\((?P<datatype>[\w?:/.]*)\))?(@(?P<language>\w*))?", column)
+
+            predicate = match.group("predicate")
+            resource_type = match.group("type")
+            datatype = match.group("datatype")
+            language = match.group("language")
+
             if pd.notna(value) and pd.notnull(value):
-                s = _get_identifier(prefixes, index)
-                p = _get_identifier(prefixes, match.group(1))
-                if isinstance(value, bytes):
-                    o = _get_identifier(prefixes, value.decode('utf-8'), match.group(3), match.group(7), match.group(9))
-                else:
-                    o = _get_identifier(prefixes, value, match.group(3), match.group(7), match.group(9))
-                g.add((s, p, o))
+                try: 
+                    p = _get_identifier(prefixes, predicate)
+
+                    if isinstance(value, bytes):
+                        o = _get_identifier(prefixes, value.decode('utf-8'), resource_type, datatype, language)
+                    else:
+                        o = _get_identifier(prefixes, value, resource_type, datatype, language)
+
+                    g.add((s, p, o))
+                except EmptyValueError as e:
+                    # If a URI value is empty, then we simply do not add the triple
+                    pass
+                except Exception as e:
+                    print(index, predicate, value)
+                    print(e)
 
     return g
 
@@ -178,7 +201,6 @@ def _get_identifier(prefixes: dict, value: object, instance: str = None, datatyp
         rdflib.term.Identifier instance - either URIRef or Literal.
 
     """
-
     if not instance:
         if language:
             return Literal(value, lang = language)
@@ -199,7 +221,7 @@ def _get_identifier(prefixes: dict, value: object, instance: str = None, datatyp
             elif _is_curie(datatype):
                 datatype_uriref = _get_uriref_for_curie(prefixes, datatype)
             else:
-                ValueError(f'Not a valid URI for datatype {datatype}')  
+                raise ValueError(f'Not a valid URI for datatype {datatype}')  
             return Literal(value, datatype = datatype_uriref)
         else:
             return Literal(value)
@@ -208,12 +230,14 @@ def _get_identifier(prefixes: dict, value: object, instance: str = None, datatyp
             return URIRef(value)
         elif _is_curie(value):
             return _get_uriref_for_curie(prefixes, value)
+        elif len(value) == 0:
+            raise EmptyValueError(f"URI is empty, but not NaN")
         else:
-            ValueError(f'Not a valid URI {value}')  
+            raise ValueError(f'Not a valid URI "{value}"')  
     elif instance == BNode.__name__:
         return BNode(value)
 
-    raise ValueError(f'Can only create Literal, URIRef or BNode but was {instance}')
+    raise ValueError(f'Can only create Literal, URIRef or BNode but was "{instance}"')
 
 def _get_idl_for_identifier(i: Identifier) -> tuple:
     """
@@ -302,8 +326,10 @@ def _is_curie(value: object) -> bool:
         True if value is matching CURIE pattern, false otherwise.
 
     """
-
-    return re.match('^\w*:\w*$', str(value))
+    # More precise CURIE regex that checks the first characters to be correct and is more permissive on other characters in the string (e.g. hyphen and dot)
+    # Regex adapted from https://stackoverflow.com/questions/12332146/regex-for-validating-xsdid-string-in-python
+    return re.match(r'^[a-zA-Z_][\w.-]*:[\w.-]*$', str(value))
+    # return re.match('^[\w_-]*:\w*$', str(value))
 
 def _is_uri(value: object) -> bool:
     """
@@ -321,5 +347,6 @@ def _is_uri(value: object) -> bool:
 
     """
 
-    return re.match('^http[s]?://.*$', str(value))
+    return is_valid_uri(str(value), require_scheme=True, require_authority=True)
+    # return re.match('^http[s]?://.*$', str(value))
 
