@@ -349,6 +349,5 @@ def _is_uri(value: object) -> bool:
 
     """
 
-    return is_valid_uri(str(value), require_scheme=True, require_authority=True)
-    # return re.match('^http[s]?://.*$', str(value))
+    return is_valid_uri(str(value))
 
